@@ -22,11 +22,11 @@ export const enum ReactiveFlags {
 }
 
 export interface Target {
-  [ReactiveFlags.SKIP]?: boolean
-  [ReactiveFlags.IS_REACTIVE]?: boolean
-  [ReactiveFlags.IS_READONLY]?: boolean
+  [ReactiveFlags.SKIP]?: boolean // 不做响应式处理的数据
+  [ReactiveFlags.IS_REACTIVE]?: boolean // target 是否是响应式
+  [ReactiveFlags.IS_READONLY]?: boolean // target 是否是只读的
   [ReactiveFlags.IS_SHALLOW]?: boolean
-  [ReactiveFlags.RAW]?: any
+  [ReactiveFlags.RAW]?: any // 表示 proxy 对应的源数据，target 已经是 proxy 对象时会有该属性
 }
 
 export const reactiveMap = new WeakMap<Target, any>()
@@ -89,12 +89,13 @@ export type UnwrapNestedRefs<T> = T extends Ref ? T : UnwrapRefSimple<T>
 export function reactive<T extends object>(target: T): UnwrapNestedRefs<T>
 export function reactive(target: object) {
   // if trying to observe a readonly proxy, return the readonly version.
+  // 如果 target 是只读类型的对象就直接返回
   if (isReadonly(target)) {
     return target
   }
   return createReactiveObject(
-    target,
-    false,
+    target, // 需要创建响应式的目标对象 data
+    false,  // 不是只读类型
     mutableHandlers,
     mutableCollectionHandlers,
     reactiveMap
@@ -185,6 +186,7 @@ function createReactiveObject(
   collectionHandlers: ProxyHandler<any>,
   proxyMap: WeakMap<Target, any>
 ) {
+  // typeof 不是 object 类型的，直接返回
   if (!isObject(target)) {
     if (__DEV__) {
       console.warn(`value cannot be made reactive: ${String(target)}`)
@@ -193,6 +195,7 @@ function createReactiveObject(
   }
   // target is already a Proxy, return it.
   // exception: calling readonly() on a reactive object
+  // 已经是响应式的就直接返回
   if (
     target[ReactiveFlags.RAW] &&
     !(isReadonly && target[ReactiveFlags.IS_REACTIVE])
@@ -200,15 +203,19 @@ function createReactiveObject(
     return target
   }
   // target already has corresponding Proxy
+  // 如果已经存在 map 中了，就直接返回
   const existingProxy = proxyMap.get(target)
   if (existingProxy) {
     return existingProxy
   }
   // only a whitelist of value types can be observed.
+  // 不做响应式的，直接返回
   const targetType = getTargetType(target)
   if (targetType === TargetType.INVALID) {
     return target
   }
+
+  // 把 target 转为 proxy
   const proxy = new Proxy(
     target,
     targetType === TargetType.COLLECTION ? collectionHandlers : baseHandlers

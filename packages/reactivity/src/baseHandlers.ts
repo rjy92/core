@@ -81,53 +81,62 @@ function createArrayInstrumentations() {
 
 function createGetter(isReadonly = false, shallow = false) {
   return function get(target: Target, key: string | symbol, receiver: object) {
-    if (key === ReactiveFlags.IS_REACTIVE) {
+    if (key === ReactiveFlags.IS_REACTIVE) { // 访问对应标记位
       return !isReadonly
     } else if (key === ReactiveFlags.IS_READONLY) {
       return isReadonly
     } else if (key === ReactiveFlags.IS_SHALLOW) {
       return shallow
     } else if (
+      // receiver 指向调用者，这里判断是为了保证触发拦截 handle 的是 proxy 本身而不是 proxy 的继承者
+      // 触发拦的两种方式：一是访问 proxy 对象本身的属性，
+      // 二是访问对象原型链上有 proxy 对象的对象的属性，因为查询会沿着原型链向下找
       key === ReactiveFlags.RAW &&
       receiver ===
-        (isReadonly
-          ? shallow
-            ? shallowReadonlyMap
-            : readonlyMap
-          : shallow
-          ? shallowReactiveMap
-          : reactiveMap
+        (isReadonly 
+          ? shallow ? shallowReadonlyMap : readonlyMap
+          : shallow ? shallowReactiveMap : reactiveMap
         ).get(target)
     ) {
+      // 返回 target 本身，也就是响应式对象的原始值
       return target
     }
 
+    // 是否是数组
     const targetIsArray = isArray(target)
-
+    // 不是只读类型 && 是数组 && 触发的是 arrayInstrumentations 工具集里的方法
     if (!isReadonly && targetIsArray && hasOwn(arrayInstrumentations, key)) {
+      // 通过 proxy 调用，arrayInstrumentations[key]的this一定指向 proxy
       return Reflect.get(arrayInstrumentations, key, receiver)
     }
 
+    // proxy 预返回值
     const res = Reflect.get(target, key, receiver)
 
+    // key 是 symbol 或访问的是__proto__属性不做依赖收集和递归响应式处理，直接返回结果
     if (isSymbol(key) ? builtInSymbols.has(key) : isNonTrackableKeys(key)) {
       return res
     }
-
+    // 不是只读类型的 target 就收集依赖。因为只读类型不会变化，无法触发 setter，也就会触发更新
     if (!isReadonly) {
+      // 收集依赖，存储到对应的全局仓库中
       track(target, TrackOpTypes.GET, key)
     }
 
+    // 浅比较，不做递归转化，就是说对象有属性值还是对象的话不递归调用 reactive()
     if (shallow) {
       return res
     }
 
+    // 访问的属性已经是 ref 对象
     if (isRef(res)) {
       // ref unwrapping - does not apply for Array + integer key.
+      // 返回 ref.value，数组除外
       const shouldUnwrap = !targetIsArray || !isIntegerKey(key)
       return shouldUnwrap ? res.value : res
     }
 
+    // 由于 proxy 只能代理一层，如果子元素是对象，需要递归继续代理
     if (isObject(res)) {
       // Convert returned value into a proxy as well. we do the isObject check
       // here to avoid invalid value warning. Also need to lazy access readonly
@@ -150,14 +159,18 @@ function createSetter(shallow = false) {
     receiver: object
   ): boolean {
     let oldValue = (target as any)[key]
+    // 只读类型且老值是 ref && 新值不是 ref
     if (isReadonly(oldValue) && isRef(oldValue) && !isRef(value)) {
       return false
     }
+    // 不是只读属性
     if (!shallow && !isReadonly(value)) {
       if (!isShallow(value)) {
+        // 拿新值和老值的原始值，因为新传入的值可能是响应式数据，如果直接和 target 上原始值比较是没有意义的
         value = toRaw(value)
         oldValue = toRaw(oldValue)
       }
+      // 不是数组 && 老值是 ref && 新值不是 ref，更新 ref.value 为新值
       if (!isArray(target) && isRef(oldValue) && !isRef(value)) {
         oldValue.value = value
         return true
@@ -166,16 +179,22 @@ function createSetter(shallow = false) {
       // in shallow mode, objects are set as-is regardless of reactive or not
     }
 
+    // 获取 key 值
     const hadKey =
       isArray(target) && isIntegerKey(key)
         ? Number(key) < target.length
         : hasOwn(target, key)
+
+    // 赋值，相当于 target[key] = value
     const result = Reflect.set(target, key, value, receiver)
     // don't trigger if target is something up in the prototype chain of original
+    // receiver 是 proxy 实例才派发更新，防止通过原型链触发拦截器触发更新
     if (target === toRaw(receiver)) {
       if (!hadKey) {
+        // 如果  target 没有 key，表示新增
         trigger(target, TriggerOpTypes.ADD, key, value)
       } else if (hasChanged(value, oldValue)) {
+        // 如果新旧值不相等
         trigger(target, TriggerOpTypes.SET, key, value, oldValue)
       }
     }
@@ -207,11 +226,11 @@ function ownKeys(target: object): (string | symbol)[] {
 }
 
 export const mutableHandlers: ProxyHandler<object> = {
-  get,
-  set,
-  deleteProperty,
-  has,
-  ownKeys
+  get, // 获取属性
+  set, // 修改属性
+  deleteProperty, // 删除属性
+  has, // 是否拥有某个属性
+  ownKeys // 收集 key，包括 symbol 类型或者不可枚举的 key
 }
 
 export const readonlyHandlers: ProxyHandler<object> = {
